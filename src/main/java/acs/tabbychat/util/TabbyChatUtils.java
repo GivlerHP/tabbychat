@@ -26,6 +26,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiChat;
 import net.minecraft.client.gui.GuiIngame;
 import net.minecraft.client.gui.GuiNewChat;
+import net.minecraft.client.gui.ChatLine;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.GuiSleepMP;
 import net.minecraft.client.multiplayer.ServerData;
@@ -52,6 +53,7 @@ import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -165,10 +167,12 @@ public class TabbyChatUtils {
         GuiNewChat chat = Minecraft.getMinecraft().ingameGUI.getChatGUI();
         if (chat.getClass() != GuiNewChatTC.class) {
             try {
+                List<ChatLine> oldChatLines = ReflectionHelper.getPrivateValue(GuiNewChat.class, chat, 3);
                 ReflectionHelper.setPrivateValue(GuiIngame.class, Minecraft.getMinecraft().ingameGUI, _gnc, 6);
                 _gnc.sentMessages = chat.getSentMessages();
-                _gnc.backupLines = ReflectionHelper.getPrivateValue(GuiNewChat.class, chat, 3);
-                _gnc.chatLines = ReflectionHelper.getPrivateValue(GuiNewChat.class, chat, 4);
+                _gnc.backupLines = new ArrayList<>();
+                _gnc.chatLines = new ArrayList<>();
+                _gnc.preserveVanillaHistory(oldChatLines);
             }
             catch (Exception e) {
                 TabbyChat.printException("Error loading chat hook.", e);

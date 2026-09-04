@@ -12,6 +12,7 @@ import acs.tabbychat.gui.ChatChannelGUI;
 import acs.tabbychat.gui.ChatScrollBar;
 import acs.tabbychat.gui.PrefsButton;
 import acs.tabbychat.gui.context.ChatContextMenu;
+import acs.tabbychat.network.TabbyChatNetwork;
 import acs.tabbychat.util.ChatExtensions;
 import acs.tabbychat.util.TabbyChatUtils;
 import com.google.common.collect.Lists;
@@ -37,6 +38,7 @@ import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.ChatComponentTranslation;
 import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.util.IChatComponent;
+import net.minecraftforge.client.ClientCommandHandler;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
@@ -66,6 +68,13 @@ public class GuiChatTC extends GuiChat {
     private boolean waitingOnPlayerNames = false;
     private int playerNameIndex = 0;
     private int spellCheckCounter = 0;
+    private final List<String> commandSuggestions = new ArrayList<>();
+    private int selectedCommandSuggestion = 0;
+    private int commandSuggestionDelay = 0;
+    private String lastCommandSuggestionInput = "";
+    private String requestedCommandSuggestionInput = "";
+    private boolean automaticSuggestionRequest = false;
+    private String commandUsage = "";
     private ChatContextMenu contextMenu;
     private ChatExtensions extensions;
 
@@ -274,6 +283,7 @@ public class GuiChatTC extends GuiChat {
             if (field.getVisible())
                 field.drawTextBox();
         }
+        this.drawCommandSuggestions(inputHeight);
 
         // Draw current message length indicator
         if (this.tc.enabled()) {
@@ -387,14 +397,20 @@ public class GuiChatTC extends GuiChat {
      */
     private void func_146405_a(String nameStart) {
         if (nameStart.length() >= 1) {
+            ClientCommandHandler.instance.autoComplete(nameStart, this.getCurrentWord());
             this.mc.thePlayer.sendQueue.addToSendQueue(new C14PacketTabComplete(nameStart));
             this.waitingOnPlayerNames = true;
+            this.automaticSuggestionRequest = false;
         }
     }
 
     @Override
     public void func_146406_a(String[] par1ArrayOfStr) {
         if (this.waitingOnPlayerNames) {
+            if (this.automaticSuggestionRequest) {
+                this.receiveCommandSuggestions(par1ArrayOfStr);
+                return;
+            }
             this.foundPlayerNames.clear();
             String[] _copy = par1ArrayOfStr;
             int _len = par1ArrayOfStr.length;
@@ -637,10 +653,18 @@ public class GuiChatTC extends GuiChat {
                         tc.activateNext();
                     break;
                 }
-                this.func_146404_p_();
+                else if (!this.commandSuggestions.isEmpty())
+                    this.applyCommandSuggestion();
+                else
+                    this.func_146404_p_();
             }
             // ESCAPE: close the chat interface
-            case Keyboard.KEY_ESCAPE -> this.mc.displayGuiScreen(null);
+            case Keyboard.KEY_ESCAPE -> {
+                if (!this.commandSuggestions.isEmpty())
+                    this.clearCommandSuggestions();
+                else
+                    this.mc.displayGuiScreen(null);
+            }
 
             // RETURN: send chat to server
             case Keyboard.KEY_NUMPADENTER, Keyboard.KEY_RETURN -> this.sendChat(ChatBox.pinned);
@@ -648,7 +672,9 @@ public class GuiChatTC extends GuiChat {
             // UP: if currently in multi-line chat, move into the above textbox.
             // Otherwise, go back one in the sent history (forced by Ctrl)
             case Keyboard.KEY_UP -> {
-                if (GuiScreen.isCtrlKeyDown())
+                if (!this.commandSuggestions.isEmpty())
+                    this.selectCommandSuggestion(-1);
+                else if (GuiScreen.isCtrlKeyDown())
                     this.getSentHistory(-1);
                 else {
                     int foc = this.getFocusedFieldIndex();
@@ -667,7 +693,9 @@ public class GuiChatTC extends GuiChat {
             // DOWN: if currently in multi-line chat, move into the below textbox.
             // Otherwise, go forward one in the sent history (force by Ctrl)
             case Keyboard.KEY_DOWN -> {
-                if (GuiScreen.isCtrlKeyDown())
+                if (!this.commandSuggestions.isEmpty())
+                    this.selectCommandSuggestion(1);
+                else if (GuiScreen.isCtrlKeyDown())
                     this.getSentHistory(1);
                 else {
                     int foc = this.getFocusedFieldIndex();
@@ -1046,11 +1074,130 @@ public class GuiChatTC extends GuiChat {
     @Override
     public void updateScreen() {
         this.inputField.updateCursorCounter();
+        this.updateCommandSuggestions();
 
         // Update screen for extensions
         for (IChatUpdateExtension ext : extensions.getListOf(IChatUpdateExtension.class)) {
             ext.updateScreen();
         }
+    }
+
+    private void updateCommandSuggestions() {
+        String input = this.getInputBeforeCursor();
+        if (!input.startsWith("/")) {
+            this.lastCommandSuggestionInput = "";
+            this.clearCommandSuggestions();
+            return;
+        }
+
+        if (!input.equals(this.lastCommandSuggestionInput)) {
+            this.lastCommandSuggestionInput = input;
+            this.commandSuggestionDelay = 2;
+            this.clearCommandSuggestions();
+            return;
+        }
+
+        if (this.commandSuggestionDelay > 0 && --this.commandSuggestionDelay == 0) {
+            this.requestedCommandSuggestionInput = input;
+            ClientCommandHandler.instance.autoComplete(input, this.getCurrentWord());
+            this.mc.thePlayer.sendQueue.addToSendQueue(new C14PacketTabComplete(input));
+            TabbyChatNetwork.requestSuggestions(input);
+            this.waitingOnPlayerNames = true;
+            this.automaticSuggestionRequest = true;
+        }
+    }
+
+    private void receiveCommandSuggestions(String[] serverSuggestions) {
+        this.waitingOnPlayerNames = false;
+        this.automaticSuggestionRequest = false;
+        if (!this.requestedCommandSuggestionInput.equals(this.getInputBeforeCursor()))
+            return;
+
+        this.commandSuggestions.clear();
+        String[] localSuggestions = ClientCommandHandler.instance.latestAutoComplete;
+        if (localSuggestions != null) {
+            for (String suggestion : localSuggestions)
+                this.addCommandSuggestion(suggestion);
+        }
+        for (String suggestion : serverSuggestions)
+            this.addCommandSuggestion(suggestion);
+        this.selectedCommandSuggestion = 0;
+    }
+
+    private void addCommandSuggestion(String suggestion) {
+        if (suggestion != null && !suggestion.isEmpty() && !this.commandSuggestions.contains(suggestion))
+            this.commandSuggestions.add(EnumChatFormatting.getTextWithoutFormattingCodes(suggestion));
+    }
+
+    public void receiveEnhancedSuggestions(String input, List<String> suggestions, String usage) {
+        if (!input.equals(this.getInputBeforeCursor()))
+            return;
+        for (String suggestion : suggestions)
+            this.addCommandSuggestion(suggestion);
+        this.commandUsage = usage == null ? "" : usage;
+    }
+
+    private void drawCommandSuggestions(int inputHeight) {
+        if (this.commandSuggestions.isEmpty())
+            return;
+
+        int visibleCount = Math.min(10, this.commandSuggestions.size());
+        int first = Math.max(0, Math.min(this.selectedCommandSuggestion - visibleCount + 1,
+                                         this.commandSuggestions.size() - visibleCount));
+        int widest = 0;
+        for (int i = first; i < first + visibleCount; i++)
+            widest = Math.max(widest, this.fontRendererObj.getStringWidth(this.commandSuggestions.get(i)));
+
+        int wordStart = this.inputField.func_146197_a(-1, this.inputField.getCursorPosition(), false);
+        int x = Math.min(4 + this.fontRendererObj.getStringWidth(this.inputField.getText().substring(0, wordStart)),
+                         Math.max(2, this.width - widest - 6));
+        int bottom = this.height - inputHeight - 2;
+        int usageHeight = this.commandUsage.isEmpty() ? 0 : 12;
+        int top = bottom - visibleCount * 12 - usageHeight;
+        if (usageHeight > 0) {
+            int usageWidth = this.fontRendererObj.getStringWidth(this.commandUsage);
+            drawRect(x, top, Math.min(this.width - 2, x + usageWidth + 4), top + 12, 0xD0000000);
+            this.fontRendererObj.drawStringWithShadow(this.commandUsage, x + 2, top + 2, 0xAAAAAA);
+            top += 12;
+        }
+        for (int row = 0; row < visibleCount; row++) {
+            int index = first + row;
+            int y = top + row * 12;
+            boolean selected = index == this.selectedCommandSuggestion;
+            drawRect(x, y, x + widest + 4, y + 12, selected ? 0xE0555555 : 0xD0000000);
+            this.fontRendererObj.drawStringWithShadow(this.commandSuggestions.get(index), x + 2, y + 2,
+                                                      selected ? 0xFFFF55 : 0xAAAAAA);
+        }
+    }
+
+    private void selectCommandSuggestion(int direction) {
+        int size = this.commandSuggestions.size();
+        this.selectedCommandSuggestion = (this.selectedCommandSuggestion + direction + size) % size;
+    }
+
+    private void applyCommandSuggestion() {
+        int cursor = this.inputField.getCursorPosition();
+        int wordStart = this.inputField.func_146197_a(-1, cursor, false);
+        this.inputField.deleteFromCursor(wordStart - cursor);
+        this.inputField.writeText(this.commandSuggestions.get(this.selectedCommandSuggestion));
+        this.clearCommandSuggestions();
+        this.lastCommandSuggestionInput = this.getInputBeforeCursor();
+    }
+
+    private String getInputBeforeCursor() {
+        return this.inputField.getText().substring(0, this.inputField.getCursorPosition());
+    }
+
+    private String getCurrentWord() {
+        int cursor = this.inputField.getCursorPosition();
+        int wordStart = this.inputField.func_146197_a(-1, cursor, false);
+        return this.inputField.getText().substring(wordStart, cursor).toLowerCase();
+    }
+
+    private void clearCommandSuggestions() {
+        this.commandSuggestions.clear();
+        this.selectedCommandSuggestion = 0;
+        this.commandUsage = "";
     }
 
 }

@@ -8,6 +8,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiDisconnected;
 import net.minecraft.client.gui.GuiIngameMenu;
 import net.minecraft.client.gui.GuiNewChat;
+import net.minecraft.client.gui.ChatLine;
 import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.entity.player.EntityPlayer;
@@ -40,6 +41,7 @@ public class GuiNewChatTC extends GuiNewChat {
     protected int chatWidth = 320;
     protected boolean saveNeeded = true;
     private int scrollOffset = 0;
+    private List<TCChatLine> pendingVanillaHistory = new ArrayList<>();
 
     private GuiNewChatTC(Minecraft par1Minecraft) {
         super(par1Minecraft);
@@ -64,6 +66,43 @@ public class GuiNewChatTC extends GuiNewChat {
                 tc.enable();
         }
         return instance;
+    }
+
+    /**
+     * Keeps messages received before TabbyChat replaced the vanilla chat GUI.
+     * Vanilla stores the unsplit messages newest-first.
+     */
+    public void preserveVanillaHistory(List<ChatLine> oldChatLines) {
+        if (oldChatLines == null)
+            return;
+        for (ChatLine line : oldChatLines) {
+            if (line != null)
+                this.pendingVanillaHistory.add(new TCChatLine(line));
+        }
+    }
+
+    /** Loads server-specific settings and imports the captured vanilla history. */
+    public void initializeForCurrentServer() {
+        if (tc.enabled())
+            tc.checkServer();
+        this.restoreVanillaHistory();
+    }
+
+    private void restoreVanillaHistory() {
+        if (this.pendingVanillaHistory.isEmpty())
+            return;
+
+        List<TCChatLine> history = this.pendingVanillaHistory;
+        this.pendingVanillaHistory = new ArrayList<>();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            TCChatLine line = history.get(i);
+            if (tc.enabled())
+                tc.processChat(line);
+            else {
+                this.addChatLines(0, line);
+                tc.addToChannel("*", line, true);
+            }
+        }
     }
 
     public void addChatLines(int _pos, TCChatLine _add) {
@@ -385,8 +424,10 @@ public class GuiNewChatTC extends GuiNewChat {
         }
 
         if (tc.enabled()) {
-            if (!backupFlag)
+            if (!backupFlag) {
                 tc.checkServer();
+                this.restoreVanillaHistory();
+            }
         }
         if (TabbyChat.generalSettings.timeStampEnable.getValue())
             mc.fontRenderer.getStringWidth(TabbyChat.generalSettings.timeStampStyle.getValue()
