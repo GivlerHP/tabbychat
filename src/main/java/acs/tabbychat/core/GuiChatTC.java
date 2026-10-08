@@ -74,6 +74,11 @@ public class GuiChatTC extends GuiChat {
     private String lastCommandSuggestionInput = "";
     private String requestedCommandSuggestionInput = "";
     private boolean automaticSuggestionRequest = false;
+    private String historySuggestionInput;
+    private boolean commandSuggestionNavigation;
+    private boolean commandSuggestionTabCycles;
+    private String commandSuggestionOriginalText = "";
+    private int commandSuggestionOriginalCursor;
     private String commandUsage = "";
     private ChatContextMenu contextMenu;
     private ChatExtensions extensions;
@@ -463,6 +468,11 @@ public class GuiChatTC extends GuiChat {
 
     @Override
     public void getSentHistory(int _dir) {
+        this.clearCommandSuggestions();
+        this.waitingOnPlayerNames = false;
+        this.automaticSuggestionRequest = false;
+        this.commandSuggestionDelay = 0;
+        this.historySuggestionInput = this.getInputBeforeCursor();
         int loc = this.sentHistoryCursor + _dir;
         int historyLength = this.gnc.getSentMessages().size();
         loc = Math.max(0, loc);
@@ -480,6 +490,7 @@ public class GuiChatTC extends GuiChat {
             this.setText(_sb, _sb.length());
             this.sentHistoryCursor = loc;
         }
+        this.historySuggestionInput = this.getInputBeforeCursor();
     }
 
     @Override
@@ -653,15 +664,22 @@ public class GuiChatTC extends GuiChat {
                         tc.activateNext();
                     break;
                 }
-                else if (!this.commandSuggestions.isEmpty())
+                else if (!this.commandSuggestions.isEmpty()) {
+                    if (this.commandSuggestionNavigation && this.commandSuggestionTabCycles)
+                        this.selectCommandSuggestion(GuiScreen.isShiftKeyDown() ? -1 : 1);
                     this.applyCommandSuggestion();
+                }
                 else
                     this.func_146404_p_();
             }
             // ESCAPE: close the chat interface
             case Keyboard.KEY_ESCAPE -> {
-                if (!this.commandSuggestions.isEmpty())
+                if (!this.commandSuggestions.isEmpty()) {
                     this.clearCommandSuggestions();
+                    this.historySuggestionInput = this.getInputBeforeCursor();
+                    this.commandSuggestionDelay = 0;
+                    this.automaticSuggestionRequest = false;
+                }
                 else
                     this.mc.displayGuiScreen(null);
             }
@@ -672,7 +690,9 @@ public class GuiChatTC extends GuiChat {
             // UP: if currently in multi-line chat, move into the above textbox.
             // Otherwise, go back one in the sent history (forced by Ctrl)
             case Keyboard.KEY_UP -> {
-                if (!this.commandSuggestions.isEmpty())
+                if (!GuiScreen.isCtrlKeyDown()
+                    && this.commandSuggestionNavigation
+                    && !this.commandSuggestions.isEmpty())
                     this.selectCommandSuggestion(-1);
                 else if (GuiScreen.isCtrlKeyDown())
                     this.getSentHistory(-1);
@@ -693,7 +713,9 @@ public class GuiChatTC extends GuiChat {
             // DOWN: if currently in multi-line chat, move into the below textbox.
             // Otherwise, go forward one in the sent history (force by Ctrl)
             case Keyboard.KEY_DOWN -> {
-                if (!this.commandSuggestions.isEmpty())
+                if (!GuiScreen.isCtrlKeyDown()
+                    && this.commandSuggestionNavigation
+                    && !this.commandSuggestions.isEmpty())
                     this.selectCommandSuggestion(1);
                 else if (GuiScreen.isCtrlKeyDown())
                     this.getSentHistory(1);
@@ -1084,6 +1106,12 @@ public class GuiChatTC extends GuiChat {
 
     private void updateCommandSuggestions() {
         String input = this.getInputBeforeCursor();
+        if (this.historySuggestionInput != null) {
+            if (input.equals(this.historySuggestionInput))
+                return;
+            this.historySuggestionInput = null;
+            this.lastCommandSuggestionInput = "";
+        }
         if (!input.startsWith("/")) {
             this.lastCommandSuggestionInput = "";
             this.clearCommandSuggestions();
@@ -1110,7 +1138,8 @@ public class GuiChatTC extends GuiChat {
     private void receiveCommandSuggestions(String[] serverSuggestions) {
         this.waitingOnPlayerNames = false;
         this.automaticSuggestionRequest = false;
-        if (!this.requestedCommandSuggestionInput.equals(this.getInputBeforeCursor()))
+        if (this.historySuggestionInput != null || this.commandSuggestionNavigation
+            || !this.requestedCommandSuggestionInput.equals(this.getInputBeforeCursor()))
             return;
 
         this.commandSuggestions.clear();
@@ -1130,7 +1159,8 @@ public class GuiChatTC extends GuiChat {
     }
 
     public void receiveEnhancedSuggestions(String input, List<String> suggestions, String usage) {
-        if (!input.equals(this.getInputBeforeCursor()))
+        if (this.historySuggestionInput != null || this.commandSuggestionNavigation
+            || !input.equals(this.getInputBeforeCursor()))
             return;
         for (String suggestion : suggestions)
             this.addCommandSuggestion(suggestion);
@@ -1173,14 +1203,24 @@ public class GuiChatTC extends GuiChat {
     private void selectCommandSuggestion(int direction) {
         int size = this.commandSuggestions.size();
         this.selectedCommandSuggestion = (this.selectedCommandSuggestion + direction + size) % size;
+        this.commandSuggestionTabCycles = false;
     }
 
     private void applyCommandSuggestion() {
-        int cursor = this.inputField.getCursorPosition();
+        if (!this.commandSuggestionNavigation) {
+            this.commandSuggestionOriginalText = this.inputField.getText();
+            this.commandSuggestionOriginalCursor = this.inputField.getCursorPosition();
+            this.commandSuggestionNavigation = true;
+        }
+        // Always replace the original range, even when a suggestion contains spaces.
+        this.inputField.setText(this.commandSuggestionOriginalText);
+        this.inputField.setCursorPosition(this.commandSuggestionOriginalCursor);
+        int cursor = this.commandSuggestionOriginalCursor;
         int wordStart = this.inputField.func_146197_a(-1, cursor, false);
         this.inputField.deleteFromCursor(wordStart - cursor);
         this.inputField.writeText(this.commandSuggestions.get(this.selectedCommandSuggestion));
-        this.clearCommandSuggestions();
+        this.commandSuggestionTabCycles = true;
+        this.commandSuggestionDelay = 0;
         this.lastCommandSuggestionInput = this.getInputBeforeCursor();
     }
 
@@ -1195,6 +1235,9 @@ public class GuiChatTC extends GuiChat {
     }
 
     private void clearCommandSuggestions() {
+        this.commandSuggestionNavigation = false;
+        this.commandSuggestionTabCycles = false;
+        this.commandSuggestionOriginalText = "";
         this.commandSuggestions.clear();
         this.selectedCommandSuggestion = 0;
         this.commandUsage = "";
